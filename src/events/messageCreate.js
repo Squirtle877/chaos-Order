@@ -11,6 +11,7 @@ import { getGuildConfig } from '../services/config/guildConfig.js';
 import { getCommandPrefix, getBotMessage, isBotOwner, isCommandCategoryEnabled, isMaintenanceMode } from '../config/bot.js';
 import { enforceAbuseProtection, formatCooldownDuration } from '../utils/abuseProtection.js';
 import { createEmbed } from '../utils/embeds.js';
+import { handleTtsMessage, getTtsSession } from '../services/ttsService.js';
 import { isCommandEnabled } from '../services/commandAccessService.js';
 import {
   getCountingGameConfig,
@@ -33,6 +34,11 @@ export default {
       const countingProcessed = await handleCountingGame(message, client);
       if (countingProcessed) {
         return;
+      }
+
+      if (getTtsSession(message.guild.id)) {
+        const guildConfig = await getGuildConfig(client, message.guild.id);
+        handleTtsMessage(message, guildConfig?.prefix || getCommandPrefix());
       }
 
       await handlePrefixCommand(message, client);
