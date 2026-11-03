@@ -2,6 +2,7 @@
 import { Client, Collection, GatewayIntentBits } from 'discord.js';
 import { REST } from '@discordjs/rest';
 import express from 'express';
+import { mountDashboard } from './web/dashboard.js';
 import cron from 'node-cron';
 
 import config from './config/application.js';
@@ -201,6 +202,8 @@ class TitanBot extends Client {
         metrics,
       });
     });
+
+    mountDashboard(app, this);
 
     app.get('/', (req, res) => {
       res.status(200).json({ 
