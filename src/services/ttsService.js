@@ -11,11 +11,13 @@ import {
     AudioPlayerStatus,
 } from '@discordjs/voice';
 import { getAllAudioUrls } from 'google-tts-api';
+import { MsEdgeTTS, OUTPUT_FORMAT } from 'msedge-tts';
 import { logger } from '../utils/logger.js';
 
 const MAX_SPOKEN_CHARS = 200;
 const MAX_QUEUE = 10;
 const DEFAULT_LANG = 'en';
+const VOICE = process.env.TTS_VOICE || 'en-GB-RyanNeural'; // British male
 
 // guildId -> { textChannelId, voiceChannelId, player, queue: [], busy: boolean }
 const sessions = new Map();
@@ -37,7 +39,22 @@ export function cleanForSpeech(text) {
         .trim();
 }
 
-async function fetchAudio(text) {
+async function fetchEdgeAudio(text) {
+    const tts = new MsEdgeTTS();
+    try {
+        await tts.setMetadata(VOICE, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
+        const { audioStream } = tts.toStream(text);
+        const chunks = [];
+        for await (const chunk of audioStream) chunks.push(chunk);
+        const audio = Buffer.concat(chunks);
+        if (!audio.length) throw new Error('empty audio');
+        return audio;
+    } finally {
+        tts.close();
+    }
+}
+
+async function fetchGoogleAudio(text) {
     const parts = getAllAudioUrls(text, { lang: DEFAULT_LANG, slow: false });
     const bufs = [];
     for (const part of parts) {
@@ -46,6 +63,15 @@ async function fetchAudio(text) {
         bufs.push(Buffer.from(await res.arrayBuffer()));
     }
     return Buffer.concat(bufs);
+}
+
+async function fetchAudio(text) {
+    try {
+        return await fetchEdgeAudio(text);
+    } catch (error) {
+        logger.warn(`Edge TTS failed (${error.message}); falling back to Google voice.`);
+        return fetchGoogleAudio(text);
+    }
 }
 
 async function drain(guildId) {
