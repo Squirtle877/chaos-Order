@@ -268,7 +268,6 @@ async function handleList(interaction) {
 
 async function handleSubmit(interaction, settings) {
     const applicationName = interaction.options.getString("application");
-    const member = interaction.member;
 
     const applicationRoles = await getApplicationRoles(interaction.client, interaction.guild.id);
     
@@ -278,6 +277,18 @@ async function handleSubmit(interaction, settings) {
 
     if (!applicationRole) {
         return await replyUserError(interaction, { type: ErrorTypes.USER_INPUT, message: 'Use `/apply list` to see available applications.' });
+    }
+
+    await showApplicationModalForRole(interaction, applicationRole.roleId, settings);
+}
+
+// Shared by `/apply submit` and the dashboard's application panel buttons.
+export async function showApplicationModalForRole(interaction, roleId, settings) {
+    const applicationRoles = await getApplicationRoles(interaction.client, interaction.guild.id);
+    const applicationRole = applicationRoles.find(appRole => appRole.roleId === roleId);
+
+    if (!applicationRole) {
+        return await replyUserError(interaction, { type: ErrorTypes.USER_INPUT, message: 'This application no longer exists.' });
     }
 
     const userApps = await getUserApplications(
