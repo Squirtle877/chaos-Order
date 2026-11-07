@@ -129,7 +129,7 @@ export async function startTts({ guild, voiceChannel, textChannelId }) {
         }
     });
 
-    sessions.set(guild.id, { textChannelId, voiceChannelId: voiceChannel.id, player, queue: [], busy: false });
+    sessions.set(guild.id, { textChannelId, voiceChannelId: voiceChannel.id, player, queue: [], busy: false, lastSpeakerId: null });
 }
 
 export function stopTts(guildId) {
@@ -159,7 +159,13 @@ export function handleTtsMessage(message, prefix) {
     if (!body) return;
     if (session.queue.length >= MAX_QUEUE) return;
 
-    const name = cleanForSpeech(spokenName(message.member?.displayName ?? message.author.username));
-    session.queue.push(`${name} says ${body}`);
+    // Skip the name when the previous message read aloud was from the same person.
+    if (session.lastSpeakerId === message.author.id) {
+        session.queue.push(body);
+    } else {
+        const name = cleanForSpeech(spokenName(message.member?.displayName ?? message.author.username));
+        session.queue.push(`${name} says ${body}`);
+    }
+    session.lastSpeakerId = message.author.id;
     drain(message.guild.id);
 }
