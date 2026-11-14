@@ -106,19 +106,3 @@ export function applicationEditPage({ guild, csrf, application, roleName, questi
 <section><h2>Delete application</h2><p class="hint">Removes the application and its questions. Existing submissions are kept.</p>
 <form method="post" action="${base}/delete" onsubmit="return confirm('Delete this application?')">${hid}<button class="danger">Delete application</button></form></section>`);
 }
-
-export function applicationEditPage({ guild, csrf, application, roleName, questions, notice, max }) {
-    const base = `/dashboard/g/${esc(guild.id)}/applications/${esc(application.roleId)}`;
-    const hid = `<input type="hidden" name="csrf" value="${esc(csrf)}">`;
-    const msg = notice?.ok ? `<div class="ok">${esc(notice.ok)}</div>` : '';
-    return layout(`Edit ${application.name}`, `<nav><a href="/dashboard/g/${esc(guild.id)}">Back to ${esc(guild.name)}</a></nav>${msg}
-<section><form method="post" action="${base}">${hid}
-<label>Application name</label><input type="text" name="name" maxlength="50" value="${esc(application.name)}" required>
-<label>Role granted on approval</label><input type="text" value="${esc(roleName)}" disabled>
-<label>Questions (one per line, up to ${esc(max)}). Applicants answer 5 per page.</label>
-<textarea name="questions" style="min-height:220px" required>${esc(questions.join('\n'))}</textarea>
-<div class="check"><input type="checkbox" id="en" name="enabled" ${application.enabled === false ? '' : 'checked'}><label for="en" style="margin:0">Enabled</label></div>
-<button>Save changes</button></form></section>
-<section><h2>Delete application</h2><p class="hint">Removes the application and its questions. Existing submissions are kept.</p>
-<form method="post" action="${base}/delete" onsubmit="return confirm('Delete this application?')">${hid}<button class="danger">Delete application</button></form></section>`);
-}
