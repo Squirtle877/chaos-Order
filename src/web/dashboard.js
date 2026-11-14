@@ -20,6 +20,7 @@ import {
 import {
     nickableRoles, getNickPrefixes, saveNickPrefixes, syncAllMembers,
 } from '../services/nicknameService.js';
+import { mountVerify, VERIFY_COOKIE, VERIFY_GUILD_COOKIE } from './verify.js';
 import ApplicationService from '../services/applicationService.js';
 import { layout, esc, guildPage, applicationEditPage, simplePage } from './views.js';
 
@@ -89,13 +90,16 @@ export function mountDashboard(app, client) {
     const redirectUri = `${baseUrl}/dashboard/callback`;
     const cookieOpts = `Path=/; HttpOnly; SameSite=Lax${secure ? '; Secure' : ''}`;
 
-    const setSession = (res, s) => res.append('Set-Cookie',
-        `${COOKIE}=${encodeURIComponent(signer.sign(s))}; ${cookieOpts}; Max-Age=${SESSION_TTL_MS / 1000}`);
+    const setSession = (res, s, cookie = COOKIE) => res.append('Set-Cookie',
+        `${cookie}=${encodeURIComponent(signer.sign(s))}; ${cookieOpts}; Max-Age=${SESSION_TTL_MS / 1000}`);
 
-    const getSession = (req) => {
-        const s = signer.verify(parseCookies(req)[COOKIE]);
+    const getSession = (req, cookie = COOKIE) => {
+        const s = signer.verify(parseCookies(req)[cookie]);
         return s && s.exp > Date.now() ? s : null;
     };
+
+    // Public Roblox verification site shares this Discord login and redirect URI.
+    mountVerify(app, client, { getSession, parseCookies, cookieOpts });
 
     router.use(express.urlencoded({ extended: false, limit: '50kb' }));
     router.use((req, res, next) => {
@@ -106,12 +110,13 @@ export function mountDashboard(app, client) {
     });
 
     router.get('/login', (req, res) => {
+        if (!req.query.verify) res.append('Set-Cookie', `${VERIFY_GUILD_COOKIE}=; ${cookieOpts}; Max-Age=0`);
         const state = crypto.randomBytes(16).toString('hex');
         res.append('Set-Cookie', `${STATE_COOKIE}=${state}; ${cookieOpts}; Max-Age=600`);
         const url = new URL('https://discord.com/oauth2/authorize');
         url.search = new URLSearchParams({
             client_id: clientId, redirect_uri: redirectUri, response_type: 'code',
-            scope: 'identify guilds', state, prompt: 'none',
+            scope: req.query.verify ? 'identify' : 'identify guilds', state, prompt: 'none',
         }).toString();
         res.redirect(url.toString());
     });
@@ -133,6 +138,16 @@ export function mountDashboard(app, client) {
             if (!tokenRes.ok) throw new Error(`token exchange ${tokenRes.status}`);
             const { access_token: token } = await tokenRes.json();
             const headers = { Authorization: `Bearer ${token}` };
+            const verifyGuild = parseCookies(req)[VERIFY_GUILD_COOKIE];
+            if (verifyGuild && /^\d{5,25}$/.test(verifyGuild)) {
+                const me = await fetch(`${DISCORD_API}/users/@me`, { headers }).then((r) => r.json());
+                setSession(res, {
+                    uid: me.id, name: me.global_name || me.username,
+                    csrf: crypto.randomBytes(16).toString('hex'), exp: Date.now() + SESSION_TTL_MS,
+                }, VERIFY_COOKIE);
+                res.append('Set-Cookie', `${VERIFY_GUILD_COOKIE}=; ${cookieOpts}; Max-Age=0`);
+                return res.redirect(`/verify/${verifyGuild}`);
+            }
             const [me, guilds] = await Promise.all([
                 fetch(`${DISCORD_API}/users/@me`, { headers }).then((r) => r.json()),
                 fetch(`${DISCORD_API}/users/@me/guilds`, { headers }).then((r) => r.json()),
@@ -209,6 +224,8 @@ export function mountDashboard(app, client) {
         const nickRoles = [...nickableRoles(guild).values()].map((r) => ({ id: r.id, name: r.name, prefix: prefixes[r.id] || '' }));
         res.send(guildPage({
             nickRoles,
+            verifyUrl: `${baseUrl}/verify/${guild.id}`,
+            verifiedRole: (await getGuildConfig(client, guild.id).catch(() => null))?.robloxVerifiedRole || '',
             guild: { id: guild.id, name: guild.name }, csrf: req.session.csrf, notice,
             channels, categories, roles, config: config || {}, apps,
             panels: panels.map((p) => ({
@@ -265,6 +282,32 @@ export function mountDashboard(app, client) {
             new ButtonBuilder().setCustomId('nick_roblox').setLabel('Set Roblox name').setStyle(ButtonStyle.Primary));
         await channel.send({ embeds: [embed], components: [row] });
         res.redirect(`/dashboard/g/${guild.id}?ok=${encodeURIComponent(`Roblox name panel posted in #${channel.name}.`)}#nicknames`);
+    }));
+
+    // --- Roblox verification ---
+    router.post('/g/:guildId/roblox', guard(async (req, res) => {
+        const { guild, body } = req;
+        const roleId = String(body.role || '');
+        const role = roleId ? nickableRoles(guild).get(roleId) : null;
+        if (roleId && !role) fail('That role is above my role or cannot be given.');
+        const config = (await getGuildConfig(client, guild.id)) || {};
+        config.robloxVerifiedRole = role ? role.id : null;
+        await setGuildConfig(client, guild.id, config);
+        res.redirect(`/dashboard/g/${guild.id}?ok=${encodeURIComponent(role ? `Verified members will get ${role.name}.` : 'Verified members will not get a role.')}#roblox`);
+    }));
+
+    router.post('/g/:guildId/roblox/panel', guard(async (req, res) => {
+        const { guild, body } = req;
+        const channel = getTextChannel(guild, body.channel);
+        const embed = new EmbedBuilder()
+            .setTitle(String(body.title || '').trim().slice(0, 256) || 'Verify your Roblox account')
+            .setDescription(String(body.description || '').trim().slice(0, 2000)
+                || 'Click the button, sign in with Discord, and prove you own your Roblox account.')
+            .setColor(getColor('info'));
+        const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setLabel('Verify Roblox').setStyle(ButtonStyle.Link).setURL(`${baseUrl}/verify/${guild.id}`));
+        await channel.send({ embeds: [embed], components: [row] });
+        res.redirect(`/dashboard/g/${guild.id}?ok=${encodeURIComponent(`Verification panel posted in #${channel.name}.`)}#roblox`);
     }));
 
     router.get('/g/:guildId', guard((req, res) => render(req, res, req.query.ok ? { ok: String(req.query.ok).slice(0, 200) } : null)));
