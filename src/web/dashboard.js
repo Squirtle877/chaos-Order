@@ -17,6 +17,9 @@ import {
     getApplicationRoles, saveApplicationRoles, getApplicationSettings,
     saveApplicationRoleSettings, getApplicationRoleSettings, deleteApplicationRoleSettings,
 } from '../utils/database.js';
+import {
+    nickableRoles, getNickPrefixes, saveNickPrefixes, syncAllMembers,
+} from '../services/nicknameService.js';
 import ApplicationService from '../services/applicationService.js';
 import { layout, esc, guildPage, applicationEditPage, simplePage } from './views.js';
 
@@ -202,7 +205,10 @@ export function mountDashboard(app, client) {
         const config = await getGuildConfig(client, guild.id).catch(() => ({}));
         const panels = (await getAllReactionRoleMessages(client, guild.id).catch(() => [])) || [];
         const apps = await getApplicationRoles(client, guild.id);
+        const prefixes = await getNickPrefixes(client, guild.id);
+        const nickRoles = [...nickableRoles(guild).values()].map((r) => ({ id: r.id, name: r.name, prefix: prefixes[r.id] || '' }));
         res.send(guildPage({
+            nickRoles,
             guild: { id: guild.id, name: guild.name }, csrf: req.session.csrf, notice,
             channels, categories, roles, config: config || {}, apps,
             panels: panels.map((p) => ({
@@ -228,6 +234,38 @@ export function mountDashboard(app, client) {
         }
         return ch;
     };
+
+    // --- Auto nicknamer ---
+    router.post('/g/:guildId/nicknames', guard(async (req, res) => {
+        const { guild, body } = req;
+        const prefixes = {};
+        for (const role of nickableRoles(guild).values()) {
+            const prefix = String(body[`prefix_${role.id}`] || '').trim().slice(0, 16);
+            if (prefix) prefixes[role.id] = prefix;
+        }
+        await saveNickPrefixes(client, guild.id, prefixes);
+        const count = Object.keys(prefixes).length;
+        res.redirect(`/dashboard/g/${guild.id}?ok=${encodeURIComponent(`Saved ${count} nickname prefix${count === 1 ? '' : 'es'}. New role changes apply automatically; use "Apply to all members" for existing members.`)}#nicknames`);
+    }));
+
+    router.post('/g/:guildId/nicknames/sync', guard(async (req, res) => {
+        if (!req.guild.members.me.permissions.has(PermissionFlagsBits.ManageNicknames)) fail('I need the Manage Nicknames permission.');
+        const r = await syncAllMembers(client, req.guild);
+        res.redirect(`/dashboard/g/${req.guild.id}?ok=${encodeURIComponent(`Done: ${r.set} nicknames set, ${r.reset} cleared, ${r.unchanged} already correct, ${r.skipped} skipped (owner, bots, or above my role).`)}#nicknames`);
+    }));
+
+    router.post('/g/:guildId/nicknames/panel', guard(async (req, res) => {
+        const { guild, body } = req;
+        const channel = getTextChannel(guild, body.channel);
+        const title = String(body.title || '').trim().slice(0, 256) || 'Set your Roblox name';
+        const description = String(body.description || '').trim().slice(0, 2000)
+            || 'Click the button and enter your Roblox username. Your server nickname will be updated to match.';
+        const embed = new EmbedBuilder().setTitle(title).setDescription(description).setColor(getColor('info'));
+        const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('nick_roblox').setLabel('Set Roblox name').setStyle(ButtonStyle.Primary));
+        await channel.send({ embeds: [embed], components: [row] });
+        res.redirect(`/dashboard/g/${guild.id}?ok=${encodeURIComponent(`Roblox name panel posted in #${channel.name}.`)}#nicknames`);
+    }));
 
     router.get('/g/:guildId', guard((req, res) => render(req, res, req.query.ok ? { ok: String(req.query.ok).slice(0, 200) } : null)));
 
