@@ -31,7 +31,7 @@ const opts = (items, { empty, selected } = {}) =>
     (empty ? `<option value="">${esc(empty)}</option>` : '') +
     items.map((i) => `<option value="${esc(i.id)}"${i.id === selected ? ' selected' : ''}>${esc(i.name)}</option>`).join('');
 
-export function guildPage({ guild, csrf, notice, channels, categories, roles, config, apps, panels }) {
+export function guildPage({ nickRoles = [], guild, csrf, notice, channels, categories, roles, config, apps, panels }) {
     const base = `/dashboard/g/${esc(guild.id)}`;
     const hid = `<input type="hidden" name="csrf" value="${esc(csrf)}">`;
     const msg = notice?.ok ? `<div class="ok">${esc(notice.ok)}</div>` : notice?.error ? `<div class="err">${esc(notice.error)}</div>` : '';
@@ -73,7 +73,38 @@ ${apps.length ? `<hr style="border:0;border-top:1px solid #1e1f22;margin:24px 0"
 <label>Applications on this panel (up to 25, hold Ctrl or Cmd to pick several)</label><select name="apps" multiple required>${apps.map((a) => `<option value="${esc(a.roleId)}">${esc(a.name)}</option>`).join('')}</select>
 <button>Post application panel</button></form>` : ''}</section>`;
 
-    return layout(guild.name, `<nav><a href="/dashboard">All servers</a> · <a href="/dashboard/logout">Sign out</a></nav>${msg}${tickets}${rr}${applications}`);
+    const nicknames = `<section id="nicknames"><h2>Auto nicknamer</h2>
+<p class="hint">Members with a role below get that prefix before their name, for example <b>[Mod] RobloxName</b>. If someone has several prefixed roles, the highest one wins. Leave a prefix blank for no change. Only roles below the bot's role are listed.</p>
+${nickRoles.length ? `<form method="post" action="${base}/nicknames">${hid}
+${nickRoles.map((r) => `<label>${esc(r.name)}</label><input type="text" name="prefix_${esc(r.id)}" maxlength="16" value="${esc(r.prefix)}" placeholder="No prefix">`).join('')}
+<button>Save prefixes</button></form>
+<form method="post" action="${base}/nicknames/sync" onsubmit="return confirm('Rename every member that has a prefixed role or a saved Roblox name?')">${hid}<button style="background:#4e5058">Apply to all members</button></form>`
+ : '<p>No roles found below the bot\'s role. Move the bot\'s role higher in Server Settings, Roles.</p>'}
+<hr style="border:0;border-top:1px solid #1e1f22;margin:24px 0">
+<h2>Roblox name form</h2>
+<p class="hint">Posts a button. Members click it, enter their Roblox username, and their nickname becomes the prefix plus that name.</p>
+<form method="post" action="${base}/nicknames/panel">${hid}${chan('channel')}
+<label>Title</label><input type="text" name="title" maxlength="256" value="Set your Roblox name">
+<label>Description</label><textarea name="description" maxlength="2000">Click the button and enter your Roblox username. Your server nickname will be updated to match.</textarea>
+<button>Post Roblox name panel</button></form></section>`;
+
+    return layout(guild.name, `<nav><a href="/dashboard">All servers</a> · <a href="/dashboard/logout">Sign out</a></nav>${msg}${tickets}${rr}${applications}${nicknames}`);
+}
+
+export function applicationEditPage({ guild, csrf, application, roleName, questions, notice, max }) {
+    const base = `/dashboard/g/${esc(guild.id)}/applications/${esc(application.roleId)}`;
+    const hid = `<input type="hidden" name="csrf" value="${esc(csrf)}">`;
+    const msg = notice?.ok ? `<div class="ok">${esc(notice.ok)}</div>` : '';
+    return layout(`Edit ${application.name}`, `<nav><a href="/dashboard/g/${esc(guild.id)}">Back to ${esc(guild.name)}</a></nav>${msg}
+<section><form method="post" action="${base}">${hid}
+<label>Application name</label><input type="text" name="name" maxlength="50" value="${esc(application.name)}" required>
+<label>Role granted on approval</label><input type="text" value="${esc(roleName)}" disabled>
+<label>Questions (one per line, up to ${esc(max)}). Applicants answer 5 per page.</label>
+<textarea name="questions" style="min-height:220px" required>${esc(questions.join('\n'))}</textarea>
+<div class="check"><input type="checkbox" id="en" name="enabled" ${application.enabled === false ? '' : 'checked'}><label for="en" style="margin:0">Enabled</label></div>
+<button>Save changes</button></form></section>
+<section><h2>Delete application</h2><p class="hint">Removes the application and its questions. Existing submissions are kept.</p>
+<form method="post" action="${base}/delete" onsubmit="return confirm('Delete this application?')">${hid}<button class="danger">Delete application</button></form></section>`);
 }
 
 export function applicationEditPage({ guild, csrf, application, roleName, questions, notice, max }) {
