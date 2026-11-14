@@ -1,5 +1,5 @@
 import { getColor, getDefaultApplicationQuestions } from '../../config/bot.js';
-import { SlashCommandBuilder, ActionRowBuilder, ModalBuilder, TextInputBuilder, TextInputStyle } from 'discord.js';
+import { SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, MessageFlags, ModalBuilder, TextInputBuilder, TextInputStyle } from 'discord.js';
 import { createEmbed, successEmbed } from '../../utils/embeds.js';
 import { logger } from '../../utils/logger.js';
 import { handleInteractionError, withErrorHandling, createError, ErrorTypes, replyUserError } from '../../utils/errorHandler.js';
@@ -17,6 +17,19 @@ import {
     updateApplication,
     getApplicationRoleSettings
 } from '../../utils/database.js';
+
+const QUESTIONS_PER_MODAL = 5;
+const DRAFT_TTL_MS = 15 * 60 * 1000;
+const pendingDrafts = new Map(); // `${guildId}:${userId}:${roleId}` -> { answers, expires }
+
+async function resolveQuestions(client, guildId, roleId, settings) {
+    let questions = settings.questions?.length ? settings.questions : getDefaultApplicationQuestions();
+    const roleSettings = await getApplicationRoleSettings(client, guildId, roleId);
+    if (roleSettings.questions && roleSettings.questions.length > 0) {
+        questions = roleSettings.questions;
+    }
+    return questions;
+}
 
 function getApplicationStatusPresentation(statusValue) {
     const normalized = typeof statusValue === 'string' ? statusValue.trim().toLowerCase() : 'unknown';
@@ -119,7 +132,8 @@ export async function handleApplicationModal(interaction) {
     const customId = interaction.customId;
     if (!customId.startsWith('app_modal_')) return;
     
-    const roleId = customId.split('_')[2];
+    const [, , roleId, pageRaw] = customId.split('_');
+    const page = Number.parseInt(pageRaw, 10) || 0;
     
     const applicationRoles = await getApplicationRoles(interaction.client, interaction.guild.id);
     const applicationRole = applicationRoles.find(appRole => appRole.roleId === roleId);
@@ -134,22 +148,47 @@ export async function handleApplicationModal(interaction) {
         return await replyUserError(interaction, { type: ErrorTypes.USER_INPUT, message: 'Role not found.' });
     }
     
-    const answers = [];
     const settings = await getApplicationSettings(interaction.client, interaction.guild.id);
+    const questions = await resolveQuestions(interaction.client, interaction.guild.id, roleId, settings);
 
-    let questions = settings.questions?.length ? settings.questions : getDefaultApplicationQuestions();
-    const roleSettings = await getApplicationRoleSettings(interaction.client, interaction.guild.id, roleId);
-    if (roleSettings.questions && roleSettings.questions.length > 0) {
-        questions = roleSettings.questions;
+    // A modal holds at most QUESTIONS_PER_MODAL questions, so longer applications span several modals.
+    const draftKey = `${interaction.guild.id}:${interaction.user.id}:${roleId}`;
+    if (page === 0) pendingDrafts.delete(draftKey);
+    const draft = pendingDrafts.get(draftKey) ?? { answers: [], expires: 0 };
+    if (page > 0 && (draft.expires < Date.now() || draft.answers.length !== page * QUESTIONS_PER_MODAL)) {
+        pendingDrafts.delete(draftKey);
+        return await replyUserError(interaction, { type: ErrorTypes.USER_INPUT, message: 'Your application session expired. Press the Apply button again to start over.' });
     }
-    
-    for (let i = 0; i < questions.length; i++) {
-        const answer = interaction.fields.getTextInputValue(`q${i}`);
-        answers.push({
-            question: questions[i],
-            answer: answer
+
+    const start = page * QUESTIONS_PER_MODAL;
+    const pageQuestions = questions.slice(start, start + QUESTIONS_PER_MODAL);
+    for (let i = 0; i < pageQuestions.length; i++) {
+        draft.answers.push({
+            question: pageQuestions[i],
+            answer: interaction.fields.getTextInputValue(`q${start + i}`),
         });
     }
+
+    const nextStart = start + QUESTIONS_PER_MODAL;
+    if (nextStart < questions.length) {
+        draft.expires = Date.now() + DRAFT_TTL_MS;
+        pendingDrafts.set(draftKey, draft);
+        const totalPages = Math.ceil(questions.length / QUESTIONS_PER_MODAL);
+        const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId(`app_continue:${roleId}:${page + 1}`)
+                .setLabel(`Continue (part ${page + 2} of ${totalPages})`)
+                .setStyle(ButtonStyle.Primary),
+        );
+        return await interaction.reply({
+            content: `Part ${page + 1} of ${totalPages} saved. Press the button to continue your **${applicationRole.name}** application.`,
+            components: [row],
+            flags: MessageFlags.Ephemeral,
+        });
+    }
+
+    pendingDrafts.delete(draftKey);
+    const answers = draft.answers;
     
     try {
         const application = await ApplicationService.submitApplication(interaction.client, {
@@ -307,33 +346,44 @@ export async function showApplicationModalForRole(interaction, roleId, settings)
         return await replyUserError(interaction, { type: ErrorTypes.USER_INPUT, message: 'The role for this application no longer exists.' });
     }
 
+    const questions = await resolveQuestions(interaction.client, interaction.guild.id, applicationRole.roleId, settings);
+    await interaction.showModal(buildApplicationModal(applicationRole, questions, 0));
+}
+
+export function buildApplicationModal(applicationRole, questions, page) {
+    const totalPages = Math.ceil(questions.length / QUESTIONS_PER_MODAL);
     const modal = new ModalBuilder()
-        .setCustomId(`app_modal_${applicationRole.roleId}`)
-        .setTitle(`Application for ${applicationRole.name}`);
+        .setCustomId(`app_modal_${applicationRole.roleId}_${page}`)
+        .setTitle((totalPages > 1
+            ? `${applicationRole.name} (${page + 1}/${totalPages})`
+            : `Application for ${applicationRole.name}`).slice(0, 45));
 
-    let questions = settings.questions?.length ? settings.questions : getDefaultApplicationQuestions();
-    const roleSettings = await getApplicationRoleSettings(interaction.client, interaction.guild.id, applicationRole.roleId);
-    if (roleSettings.questions && roleSettings.questions.length > 0) {
-        questions = roleSettings.questions;
-    }
-
-    questions.forEach((question, index) => {
+    const start = page * QUESTIONS_PER_MODAL;
+    questions.slice(start, start + QUESTIONS_PER_MODAL).forEach((question, i) => {
         const input = new TextInputBuilder()
-            .setCustomId(`q${index}`)
-            .setLabel(
-                question.length > 45
-                    ? `${question.substring(0, 42)}...`
-                    : question,
-            )
+            .setCustomId(`q${start + i}`)
+            .setLabel(question.length > 45 ? `${question.substring(0, 42)}...` : question)
             .setStyle(TextInputStyle.Paragraph)
             .setRequired(true)
             .setMaxLength(1000);
-
-        const row = new ActionRowBuilder().addComponents(input);
-        modal.addComponents(row);
+        modal.addComponents(new ActionRowBuilder().addComponents(input));
     });
+    return modal;
+}
 
-    await interaction.showModal(modal);
+// Opens the next part of a multi-part application (button: app_continue:<roleId>:<page>).
+export async function showApplicationContinuation(interaction, roleId, page) {
+    const applicationRoles = await getApplicationRoles(interaction.client, interaction.guild.id);
+    const applicationRole = applicationRoles.find(appRole => appRole.roleId === roleId);
+    if (!applicationRole) {
+        return await replyUserError(interaction, { type: ErrorTypes.USER_INPUT, message: 'This application no longer exists.' });
+    }
+    const settings = await getApplicationSettings(interaction.client, interaction.guild.id);
+    const questions = await resolveQuestions(interaction.client, interaction.guild.id, roleId, settings);
+    if (page * QUESTIONS_PER_MODAL >= questions.length) {
+        return await replyUserError(interaction, { type: ErrorTypes.USER_INPUT, message: 'This application changed. Press the Apply button again to start over.' });
+    }
+    await interaction.showModal(buildApplicationModal(applicationRole, questions, page));
 }
 
 async function handleStatus(interaction) {
