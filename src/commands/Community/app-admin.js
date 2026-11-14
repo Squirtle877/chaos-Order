@@ -16,6 +16,8 @@ import {
     saveApplicationRoleSettings,
     deleteApplication
 } from '../../utils/database.js';
+import { createTicket } from '../../services/ticket.js';
+import { getGuildConfig } from '../../services/config/guildConfig.js';
 import { InteractionHelper } from '../../utils/interactionHelper.js';
 import appDashboard from './modules/app_dashboard.js';
 
@@ -311,12 +313,50 @@ async function handleReview(interaction) {
             .setCustomId(`app_review_deny_${appId}`)
             .setLabel('Deny')
             .setStyle(ButtonStyle.Danger),
+        new ButtonBuilder()
+            .setCustomId(`app_review_ticket_${appId}`)
+            .setLabel('Open Ticket')
+            .setStyle(ButtonStyle.Secondary),
     );
 
     await InteractionHelper.safeEditReply(interaction, {
         embeds: [appEmbed],
         components: [buttonRow],
         flags: ["Ephemeral"],
+    });
+
+    // "Open Ticket": private ticket with the applicant and the reviewer, without ending the review.
+    const ticketCollector = interaction.channel.createMessageComponentCollector({
+        componentType: ComponentType.Button,
+        filter: i => i.user.id === interaction.user.id && i.customId === `app_review_ticket_${appId}`,
+        time: 300_000,
+    });
+
+    ticketCollector.on('collect', async ticketInteraction => {
+        try {
+            await ticketInteraction.deferReply({ flags: ["Ephemeral"] });
+            const applicant = await interaction.guild.members.fetch(application.userId).catch(() => null);
+            if (!applicant) {
+                return await ticketInteraction.editReply({ content: 'The applicant is no longer in this server, so I cannot open a ticket with them.' });
+            }
+            const config = await getGuildConfig(interaction.client, interaction.guild.id);
+            const { channel } = await createTicket(
+                interaction.guild,
+                applicant,
+                config.ticketCategoryId || null,
+                `Application review: ${application.roleName} (ID ${appId})`,
+            );
+            await channel.permissionOverwrites.edit(interaction.user.id, {
+                ViewChannel: true, SendMessages: true, ReadMessageHistory: true, AttachFiles: true,
+            }).catch((error) => logger.warn('Could not give reviewer access to application ticket', { error: error.message }));
+            await ticketInteraction.editReply({ content: `Ticket opened with ${applicant}: ${channel}` });
+        } catch (error) {
+            logger.error('Error opening ticket from application review:', error);
+            const message = error?.userMessage || error?.message || 'Could not open the ticket.';
+            await (ticketInteraction.deferred
+                ? ticketInteraction.editReply({ content: message })
+                : ticketInteraction.reply({ content: message, flags: ["Ephemeral"] })).catch(() => {});
+        }
     });
 
     const collector = interaction.channel.createMessageComponentCollector({
@@ -328,6 +368,8 @@ async function handleReview(interaction) {
         time: 300_000, 
         max: 1,
     });
+
+    collector.on('end', () => ticketCollector.stop());
 
     collector.on('collect', async buttonInteraction => {
         const isApprove = buttonInteraction.customId.includes('approve');
