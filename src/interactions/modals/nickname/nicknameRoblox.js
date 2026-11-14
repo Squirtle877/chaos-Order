@@ -10,7 +10,7 @@ export default {
         const name = interaction.fields.getTextInputValue('roblox_name').trim();
         if (!isValidRobloxName(name)) {
             return interaction.reply({
-                content: 'Roblox usernames are 3-20 characters: letters, numbers and underscores only.',
+                content: 'Roblox names are 3-20 characters: letters, numbers, underscores, and spaces between words.',
                 flags: MessageFlags.Ephemeral,
             });
         }

@@ -8,7 +8,7 @@ export default {
         const current = await getRobloxName(client, interaction.guild.id, interaction.user.id).catch(() => null);
         const input = new TextInputBuilder()
             .setCustomId('roblox_name')
-            .setLabel('Your Roblox username')
+            .setLabel('Your Roblox name')
             .setStyle(TextInputStyle.Short)
             .setMinLength(3)
             .setMaxLength(20)

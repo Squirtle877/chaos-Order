@@ -4,7 +4,8 @@ import { getGuildConfig, setGuildConfig } from './config/guildConfig.js';
 import { logger } from '../utils/logger.js';
 
 const MAX_NICK = 32;
-const ROBLOX_NAME = /^[A-Za-z0-9_]{3,20}$/;
+// Roblox usernames have no spaces, but display names can (3-20 characters), so spaces are allowed inside.
+const ROBLOX_NAME = /^[A-Za-z0-9_](?:[A-Za-z0-9_ ]{1,18})[A-Za-z0-9_]$/;
 const robloxKey = (guildId, userId) => `guild:${guildId}:robloxName:${userId}`;
 
 export function isValidRobloxName(name) {
