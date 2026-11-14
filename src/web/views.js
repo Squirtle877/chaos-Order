@@ -31,7 +31,7 @@ const opts = (items, { empty, selected } = {}) =>
     (empty ? `<option value="">${esc(empty)}</option>` : '') +
     items.map((i) => `<option value="${esc(i.id)}"${i.id === selected ? ' selected' : ''}>${esc(i.name)}</option>`).join('');
 
-export function guildPage({ nickRoles = [], guild, csrf, notice, channels, categories, roles, config, apps, panels }) {
+export function guildPage({ nickRoles = [], verifyUrl = '', verifiedRole = '', guild, csrf, notice, channels, categories, roles, config, apps, panels }) {
     const base = `/dashboard/g/${esc(guild.id)}`;
     const hid = `<input type="hidden" name="csrf" value="${esc(csrf)}">`;
     const msg = notice?.ok ? `<div class="ok">${esc(notice.ok)}</div>` : notice?.error ? `<div class="err">${esc(notice.error)}</div>` : '';
@@ -88,7 +88,18 @@ ${nickRoles.map((r) => `<label>${esc(r.name)}</label><input type="text" name="pr
 <label>Description</label><textarea name="description" maxlength="2000">Click the button and enter your Roblox username. Your server nickname will be updated to match.</textarea>
 <button>Post Roblox name panel</button></form></section>`;
 
-    return layout(guild.name, `<nav><a href="/dashboard">All servers</a> · <a href="/dashboard/logout">Sign out</a></nav>${msg}${tickets}${rr}${applications}${nicknames}`);
+    const robloxVerify = `<section id="roblox"><h2>Roblox verification</h2>
+<p class="hint">Members prove they own a Roblox account by putting a one-time code in their Roblox profile description. Their verified name is then used by the auto nicknamer. Public page: <a href="${esc(verifyUrl)}">${esc(verifyUrl)}</a></p>
+<form method="post" action="${base}/roblox">${hid}
+<label>Role given when verified (optional)</label>
+<select name="role"><option value="">None</option>${nickRoles.map((r) => `<option value="${esc(r.id)}"${r.id === verifiedRole ? ' selected' : ''}>${esc(r.name)}</option>`).join('')}</select>
+<button>Save</button></form>
+<form method="post" action="${base}/roblox/panel">${hid}${chan('channel')}
+<label>Title</label><input type="text" name="title" maxlength="256" value="Verify your Roblox account">
+<label>Description</label><textarea name="description" maxlength="2000">Click the button, sign in with Discord, and prove you own your Roblox account.</textarea>
+<button>Post verification panel</button></form></section>`;
+
+    return layout(guild.name, `<nav><a href="/dashboard">All servers</a> · <a href="/dashboard/logout">Sign out</a></nav>${msg}${tickets}${rr}${applications}${nicknames}${robloxVerify}`);
 }
 
 export function applicationEditPage({ guild, csrf, application, roleName, questions, notice, max }) {
