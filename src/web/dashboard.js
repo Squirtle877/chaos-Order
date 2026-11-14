@@ -15,10 +15,13 @@ import {
 } from '../services/reactionRoleService.js';
 import {
     getApplicationRoles, saveApplicationRoles, getApplicationSettings,
-    saveApplicationRoleSettings,
+    saveApplicationRoleSettings, getApplicationRoleSettings, deleteApplicationRoleSettings,
 } from '../utils/database.js';
 import ApplicationService from '../services/applicationService.js';
-import { layout, esc, guildPage, simplePage } from './views.js';
+import { layout, esc, guildPage, applicationEditPage, simplePage } from './views.js';
+
+const MAX_QUESTIONS = 25;
+const MAX_PANEL_APPS = 25; // 5 buttons per row, 5 rows
 
 const DISCORD_API = 'https://discord.com/api/v10';
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
@@ -54,6 +57,10 @@ function parseCookies(req) {
         if (i > 0) out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
     }
     return out;
+}
+
+function parseQuestions(raw) {
+    return String(raw || '').split('\n').map((q) => q.trim().slice(0, 100)).filter(Boolean).slice(0, MAX_QUESTIONS);
 }
 
 function toArray(v) { return v === undefined ? [] : Array.isArray(v) ? v : [v]; }
@@ -236,16 +243,26 @@ export function mountDashboard(app, client) {
         const staff = body.staffRole && guild.roles.cache.has(body.staffRole) ? body.staffRole : null;
 
         const config = (await getGuildConfig(client, guild.id)) || {};
-        if (config.ticketPanelChannelId && config.ticketPanelMessageId) {
-            const old = guild.channels.cache.get(config.ticketPanelChannelId);
-            await old?.messages?.delete?.(config.ticketPanelMessageId).catch(() => {});
-        }
 
         const embed = new EmbedBuilder().setTitle('Support Tickets').setDescription(message).setColor(getColor('info'));
         const row = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId('create_ticket').setLabel(label).setStyle(ButtonStyle.Primary).setEmoji('📩'),
         );
-        const sent = await channel.send({ embeds: [embed], components: [row] });
+
+        // Editing: update the existing panel message in place when it is still in the chosen channel.
+        let sent = null;
+        let sentIsNew = false;
+        const oldChannel = config.ticketPanelChannelId ? guild.channels.cache.get(config.ticketPanelChannelId) : null;
+        const oldMessage = oldChannel && config.ticketPanelMessageId
+            ? await oldChannel.messages.fetch(config.ticketPanelMessageId).catch(() => null) : null;
+        if (oldMessage && oldChannel.id === channel.id) {
+            sent = await oldMessage.edit({ embeds: [embed], components: [row] }).catch(() => null);
+        }
+        if (!sent) {
+            sent = await channel.send({ embeds: [embed], components: [row] });
+            sentIsNew = true;
+            if (oldMessage) await oldMessage.delete().catch(() => {});
+        }
 
         Object.assign(config, {
             ticketCategoryId: category, ticketClosedCategoryId: closed, ticketStaffRoleId: staff,
@@ -255,11 +272,11 @@ export function mountDashboard(app, client) {
         try {
             await setGuildConfig(client, guild.id, config);
         } catch (error) {
-            await sent.delete().catch(() => {});
+            if (sentIsNew) await sent.delete().catch(() => {});
             throw error;
         }
         logger.info('Ticket panel posted from dashboard', { guildId: guild.id, userId: req.session.uid });
-        res.redirect(`/dashboard/g/${guild.id}?ok=${encodeURIComponent(`Ticket panel posted in #${channel.name}.`)}`);
+        res.redirect(`/dashboard/g/${guild.id}?ok=${encodeURIComponent(`Ticket panel saved in #${channel.name}.`)}`);
     }));
 
     // --- Reaction roles ---
@@ -321,10 +338,10 @@ export function mountDashboard(app, client) {
         const { guild, body } = req;
         const name = String(body.name || '').trim().slice(0, 50);
         const role = guild.roles.cache.get(body.role);
-        const questions = String(body.questions || '').split('\n').map((q) => q.trim().slice(0, 100)).filter(Boolean).slice(0, 5);
+        const questions = parseQuestions(body.questions);
         if (!name) fail('Give the application a name.');
         if (!role) fail('Pick the role people apply for.');
-        if (!questions.length) fail('Add at least one question (one per line, up to 5).');
+        if (!questions.length) fail(`Add at least one question (one per line, up to ${MAX_QUESTIONS}).`);
 
         const existing = await getApplicationRoles(client, guild.id);
         if (existing.some((r) => r.roleId === role.id)) fail(`${role.name} is already an application.`);
@@ -341,16 +358,60 @@ export function mountDashboard(app, client) {
         const { guild, body } = req;
         const channel = getTextChannel(guild, body.channel);
         const apps = await getApplicationRoles(client, guild.id);
-        const selected = toArray(body.apps).map((id) => apps.find((a) => a.roleId === id)).filter(Boolean).slice(0, 5);
+        const selected = toArray(body.apps).map((id) => apps.find((a) => a.roleId === id)).filter(Boolean).slice(0, MAX_PANEL_APPS);
         if (!selected.length) fail('Pick at least one application for the panel.');
         const title = String(body.title || '').trim().slice(0, 256) || 'Applications';
         const description = String(body.description || '').trim().slice(0, 2000) || 'Click a button below to apply.';
 
         const embed = new EmbedBuilder().setTitle(title).setDescription(description).setColor(getColor('info'));
-        const row = new ActionRowBuilder().addComponents(selected.map((a) =>
-            new ButtonBuilder().setCustomId(`apply_panel:${a.roleId}`).setLabel(`Apply: ${a.name}`.slice(0, 80)).setStyle(ButtonStyle.Success)));
-        await channel.send({ embeds: [embed], components: [row] });
+        const buttons = selected.map((a) =>
+            new ButtonBuilder().setCustomId(`apply_panel:${a.roleId}`).setLabel(`Apply: ${a.name}`.slice(0, 80)).setStyle(ButtonStyle.Success));
+        const rows = [];
+        for (let i = 0; i < buttons.length; i += 5) rows.push(new ActionRowBuilder().addComponents(buttons.slice(i, i + 5)));
+        await channel.send({ embeds: [embed], components: rows });
         res.redirect(`/dashboard/g/${guild.id}?ok=${encodeURIComponent(`Application panel posted in #${channel.name}.`)}`);
+    }));
+
+    const findApp = async (guild, roleId) => (await getApplicationRoles(client, guild.id)).find((a) => a.roleId === roleId);
+
+    router.get('/g/:guildId/applications/:roleId', guard(async (req, res) => {
+        const application = await findApp(req.guild, req.params.roleId);
+        if (!application) return res.redirect(`/dashboard/g/${req.guild.id}?ok=${encodeURIComponent('Application not found.')}`);
+        const settings = await getApplicationRoleSettings(client, req.guild.id, application.roleId);
+        const roles = req.guild.roles.cache.get(application.roleId);
+        res.send(applicationEditPage({
+            guild: { id: req.guild.id, name: req.guild.name }, csrf: req.session.csrf, application,
+            roleName: roles?.name || 'deleted role', questions: settings?.questions || [],
+            notice: req.query.ok ? { ok: String(req.query.ok).slice(0, 200) } : null, max: MAX_QUESTIONS,
+        }));
+    }));
+
+    router.post('/g/:guildId/applications/:roleId', guard(async (req, res) => {
+        const { guild, body } = req;
+        const all = await getApplicationRoles(client, guild.id);
+        const application = all.find((a) => a.roleId === req.params.roleId);
+        if (!application) fail('Application not found.');
+        const name = String(body.name || '').trim().slice(0, 50);
+        const questions = parseQuestions(body.questions);
+        if (!name) fail('Give the application a name.');
+        if (!questions.length) fail(`Add at least one question (one per line, up to ${MAX_QUESTIONS}).`);
+        if (all.some((a) => a !== application && a.name.toLowerCase() === name.toLowerCase())) fail('Another application already uses that name.');
+        application.name = name;
+        application.enabled = body.enabled === 'on';
+        await saveApplicationRoles(client, guild.id, all);
+        const settings = (await getApplicationRoleSettings(client, guild.id, application.roleId)) || {};
+        await saveApplicationRoleSettings(client, guild.id, application.roleId, { ...settings, questions });
+        res.redirect(`/dashboard/g/${guild.id}/applications/${application.roleId}?ok=${encodeURIComponent('Saved. Existing panels pick up the new questions automatically; repost a panel to change button names.')}`);
+    }));
+
+    router.post('/g/:guildId/applications/:roleId/delete', guard(async (req, res) => {
+        const { guild } = req;
+        const all = await getApplicationRoles(client, guild.id);
+        const next = all.filter((a) => a.roleId !== req.params.roleId);
+        if (next.length === all.length) fail('Application not found.');
+        await saveApplicationRoles(client, guild.id, next);
+        await deleteApplicationRoleSettings(client, guild.id, req.params.roleId);
+        res.redirect(`/dashboard/g/${guild.id}?ok=${encodeURIComponent('Application deleted. Buttons for it on old panels will stop working.')}`);
     }));
 
     app.use('/dashboard', router);

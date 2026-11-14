@@ -27,26 +27,27 @@ export function simplePage(title, htmlBody) {
     return layout(title, `<p>${htmlBody}</p>`);
 }
 
-const opts = (items, { empty } = {}) =>
-    (empty ? `<option value="">${esc(empty)}</option>` : '') + items.map((i) => `<option value="${esc(i.id)}">${esc(i.name)}</option>`).join('');
+const opts = (items, { empty, selected } = {}) =>
+    (empty ? `<option value="">${esc(empty)}</option>` : '') +
+    items.map((i) => `<option value="${esc(i.id)}"${i.id === selected ? ' selected' : ''}>${esc(i.name)}</option>`).join('');
 
 export function guildPage({ guild, csrf, notice, channels, categories, roles, config, apps, panels }) {
     const base = `/dashboard/g/${esc(guild.id)}`;
     const hid = `<input type="hidden" name="csrf" value="${esc(csrf)}">`;
     const msg = notice?.ok ? `<div class="ok">${esc(notice.ok)}</div>` : notice?.error ? `<div class="err">${esc(notice.error)}</div>` : '';
-    const chan = (name) => `<label>Channel</label><select name="${name}" required>${opts(channels)}</select>`;
+    const chan = (name, selected) => `<label>Channel</label><select name="${name}" required>${opts(channels, { selected })}</select>`;
 
     const tickets = `<section id="tickets"><h2>Ticket panel</h2>
-<p class="hint">${config.ticketPanelChannelId ? 'A panel already exists. Posting again replaces it.' : 'Posts a button members click to open a private ticket.'}</p>
-<form method="post" action="${base}/tickets">${hid}${chan('channel')}
+<p class="hint">${config.ticketPanelChannelId ? 'Your current settings are loaded below. Saving updates the existing panel message in place (or moves it if you pick another channel).' : 'Posts a button members click to open a private ticket.'}</p>
+<form method="post" action="${base}/tickets">${hid}${chan('channel', config.ticketPanelChannelId)}
 <label>Panel message</label><textarea name="message" maxlength="2000">${esc(config.ticketPanelMessage || 'Click the button below to create a support ticket.')}</textarea>
 <label>Button label</label><input type="text" name="label" maxlength="80" value="${esc(config.ticketButtonLabel || 'Create Ticket')}">
-<label>Staff role (can see tickets)</label><select name="staffRole">${opts(roles, { empty: 'None' })}</select>
-<label>Open tickets category</label><select name="category">${opts(categories, { empty: 'Create a Tickets category' })}</select>
-<label>Closed tickets category</label><select name="closedCategory">${opts(categories, { empty: 'None' })}</select>
+<label>Staff role (can see tickets)</label><select name="staffRole">${opts(roles, { empty: 'None', selected: config.ticketStaffRoleId })}</select>
+<label>Open tickets category</label><select name="category">${opts(categories, { empty: 'Create a Tickets category', selected: config.ticketCategoryId })}</select>
+<label>Closed tickets category</label><select name="closedCategory">${opts(categories, { empty: 'None', selected: config.ticketClosedCategoryId })}</select>
 <label>Max open tickets per user</label><input type="number" name="max" min="1" max="10" value="${esc(config.maxTicketsPerUser || 3)}">
 <div class="check"><input type="checkbox" id="dm" name="dmOnClose" ${config.dmOnClose === false ? '' : 'checked'}><label for="dm" style="margin:0">DM the user when their ticket closes</label></div>
-<button>Post ticket panel</button></form></section>`;
+<button>${config.ticketPanelChannelId ? 'Save ticket panel' : 'Post ticket panel'}</button></form></section>`;
 
     const rr = `<section id="reactroles"><h2>Reaction roles</h2>
 <p class="hint">A dropdown where members pick their own roles. Hold Ctrl or Cmd to select several. Roles above the bot's role or with admin permissions are rejected.</p>
@@ -57,20 +58,36 @@ ${panels.map((p) => `<div class="row"><span>#${esc(p.channelName)}: ${esc(p.role
 <label>Roles</label><select name="roles" multiple required>${opts(roles)}</select>
 <button>Post reaction role panel</button></form></section>`;
 
-    const appList = apps.length ? `<ul class="list">${apps.map((a) => `<li>${esc(a.name)}</li>`).join('')}</ul>` : '';
+    const appList = apps.length ? apps.map((a) => `<div class="row"><span>${esc(a.name)}${a.enabled === false ? ' (disabled)' : ''}</span><a href="${base}/applications/${esc(a.roleId)}">Edit</a></div>`).join('') : '';
     const applications = `<section id="applications"><h2>Applications</h2>
 <p class="hint">Step 1: create an application. Step 2: post a panel with Apply buttons.</p>${appList}
 <form method="post" action="${base}/applications">${hid}
 <label>Application name</label><input type="text" name="name" maxlength="50" placeholder="Moderator" required>
 <label>Role applicants are applying for</label><select name="role" required>${opts(roles)}</select>
-<label>Questions (one per line, up to 5)</label><textarea name="questions" required placeholder="Why do you want this role?&#10;What experience do you have?"></textarea>
+<label>Questions (one per line, up to 25)</label><textarea name="questions" required placeholder="Why do you want this role?&#10;What experience do you have?"></textarea>
 <button>Create application</button></form>
 ${apps.length ? `<hr style="border:0;border-top:1px solid #1e1f22;margin:24px 0">
 <form method="post" action="${base}/applications/panel">${hid}${chan('channel')}
 <label>Title</label><input type="text" name="title" maxlength="256" value="Applications">
 <label>Description</label><textarea name="description" maxlength="2000">Click a button below to apply.</textarea>
-<label>Applications on this panel (up to 5)</label><select name="apps" multiple required>${apps.map((a) => `<option value="${esc(a.roleId)}">${esc(a.name)}</option>`).join('')}</select>
+<label>Applications on this panel (up to 25, hold Ctrl or Cmd to pick several)</label><select name="apps" multiple required>${apps.map((a) => `<option value="${esc(a.roleId)}">${esc(a.name)}</option>`).join('')}</select>
 <button>Post application panel</button></form>` : ''}</section>`;
 
     return layout(guild.name, `<nav><a href="/dashboard">All servers</a> · <a href="/dashboard/logout">Sign out</a></nav>${msg}${tickets}${rr}${applications}`);
+}
+
+export function applicationEditPage({ guild, csrf, application, roleName, questions, notice, max }) {
+    const base = `/dashboard/g/${esc(guild.id)}/applications/${esc(application.roleId)}`;
+    const hid = `<input type="hidden" name="csrf" value="${esc(csrf)}">`;
+    const msg = notice?.ok ? `<div class="ok">${esc(notice.ok)}</div>` : '';
+    return layout(`Edit ${application.name}`, `<nav><a href="/dashboard/g/${esc(guild.id)}">Back to ${esc(guild.name)}</a></nav>${msg}
+<section><form method="post" action="${base}">${hid}
+<label>Application name</label><input type="text" name="name" maxlength="50" value="${esc(application.name)}" required>
+<label>Role granted on approval</label><input type="text" value="${esc(roleName)}" disabled>
+<label>Questions (one per line, up to ${esc(max)}). Applicants answer 5 per page.</label>
+<textarea name="questions" style="min-height:220px" required>${esc(questions.join('\n'))}</textarea>
+<div class="check"><input type="checkbox" id="en" name="enabled" ${application.enabled === false ? '' : 'checked'}><label for="en" style="margin:0">Enabled</label></div>
+<button>Save changes</button></form></section>
+<section><h2>Delete application</h2><p class="hint">Removes the application and its questions. Existing submissions are kept.</p>
+<form method="post" action="${base}/delete" onsubmit="return confirm('Delete this application?')">${hid}<button class="danger">Delete application</button></form></section>`);
 }
