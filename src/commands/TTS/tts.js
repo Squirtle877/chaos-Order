@@ -2,7 +2,7 @@ import { SlashCommandBuilder, MessageFlags, PermissionFlagsBits } from 'discord.
 import { InteractionHelper } from '../../utils/interactionHelper.js';
 import { successEmbed, errorEmbed } from '../../utils/embeds.js';
 import { botHasPermission } from '../../utils/permissionGuard.js';
-import { startTts, stopTts, getTtsSession } from '../../services/ttsService.js';
+import { startTts, stopTts, getTtsSettings, saveTtsSettings, TTS_LIMITS } from '../../services/ttsService.js';
 
 export default {
     slashOnly: true,
@@ -16,6 +16,13 @@ export default {
         )
         .addSubcommand((sub) =>
             sub.setName('stop').setDescription('Stop reading messages and leave the voice channel'),
+        )
+        .addSubcommand((sub) =>
+            sub.setName('settings').setDescription('View or change TTS volume and speed')
+                .addIntegerOption((o) => o.setName('volume').setDescription(`Volume in percent (${TTS_LIMITS.volumeMin}-${TTS_LIMITS.volumeMax}, default 100)`)
+                    .setMinValue(TTS_LIMITS.volumeMin).setMaxValue(TTS_LIMITS.volumeMax))
+                .addNumberOption((o) => o.setName('speed').setDescription(`Words per second (${TTS_LIMITS.wpsMin}-${TTS_LIMITS.wpsMax}, normal is about 2.5)`)
+                    .setMinValue(TTS_LIMITS.wpsMin).setMaxValue(TTS_LIMITS.wpsMax)),
         ),
 
     async execute(interaction, config, client) {
@@ -24,6 +31,18 @@ export default {
 
         const reply = (embed) => InteractionHelper.safeEditReply(interaction, { embeds: [embed] });
         const sub = interaction.options.getSubcommand();
+
+        if (sub === 'settings') {
+            const volume = interaction.options.getInteger('volume');
+            const wps = interaction.options.getNumber('speed');
+            const settings = volume === null && wps === null
+                ? await getTtsSettings(client, interaction.guild.id)
+                : await saveTtsSettings(client, interaction.guild.id, {
+                    volume: volume ?? undefined,
+                    wps: wps ?? undefined,
+                });
+            return reply(successEmbed('TTS settings', `Volume: **${settings.volume}%**\nSpeed: **${settings.wps} words per second** (normal is about 2.5)\n\nChanges apply from the next message read.`));
+        }
 
         if (sub === 'stop') {
             const stopped = stopTts(interaction.guild.id);
@@ -46,6 +65,7 @@ export default {
                 guild: interaction.guild,
                 voiceChannel,
                 textChannelId: interaction.channel.id,
+                settings: await getTtsSettings(client, interaction.guild.id),
             });
         } catch {
             return reply(errorEmbed('TTS', 'Could not connect to the voice channel.'));
